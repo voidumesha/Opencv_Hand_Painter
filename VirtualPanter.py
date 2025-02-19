@@ -1,84 +1,108 @@
 import cv2
-import numpy as np
+import mediapipe as mp
 import time
-import os
-import HandTrackingModule as htm
+import math
 
-brushThickness = 12
-eraserThickness = 120
+class handDetector():
+    def __init__(self, mode=False, maxHands=2, detectionCon=0.5, trackCon=0.5):
+        self.mode = mode
+        self.maxHands = maxHands
+        self.detectionCon = detectionCon
+        self.trackCon = trackCon
 
-folderPath = "Header"
-myList = os.listdir(folderPath)
-print(myList)
-overLayList = []
-for imPath in myList:
-    image = cv2.imread(f'{folderPath}/{imPath}')
-    overLayList.append(image)
-print(len(overLayList))
-header = overLayList[0]
+        self.mpHands = mp.solutions.hands
+        self.hands = self.mpHands.Hands(static_image_mode=self.mode,
+                                        max_num_hands=self.maxHands,
+                                        min_detection_confidence=self.detectionCon,
+                                        min_tracking_confidence=self.trackCon)
+        self.mpDraw = mp.solutions.drawing_utils
+        self.tipIds = [4, 8, 12, 16, 20]
 
-drawColor =  (225, 0, 225)
+    def findHands(self, img, draw=True):
+        imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        self.results = self.hands.process(imgRGB)
 
-cap = cv2.VideoCapture(0)
-cap.set(3, 1280)
-cap.set(4, 720)
+        if self.results.multi_hand_landmarks:
+            for handLms in self.results.multi_hand_landmarks:
+                if draw:
+                    self.mpDraw.draw_landmarks(img, handLms, self.mpHands.HAND_CONNECTIONS)
+        return img
 
-detector = htm.handDetector(detectionCon=0.85)
-xp, yp = 0, 0
+    def findPosition(self, img, handNo=0, draw=True):
+        xList = []
+        yList = []
+        bbox = []
 
-imgCanvas = np.zeros((720, 1280, 3), np.uint8)
+        self.lmList = []
+        if self.results.multi_hand_landmarks:
+            myHand = self.results.multi_hand_landmarks[handNo]
+            for id, lm in enumerate(myHand.landmark):
+                h, w, c = img.shape
+                cx, cy = int(lm.x * w), int(lm.y * h)
+                xList.append(cx)
+                yList.append(cy)
+                self.lmList.append([id, cx, cy])
+                if draw:
+                    cv2.circle(img, (cx, cy), 5, (255, 0, 0), cv2.FILLED)
+            xmin, xmax = min(xList), max(xList)
+            ymin, ymax = min(yList), max(yList)
+            bbox = xmin, ymin, xmax, ymax
 
-while True:
-    success, img = cap.read()
-    img = cv2.flip(img, 1)
+            if draw:
+                cv2.rectangle(img, (bbox[0] - 20, bbox[1] - 20), (bbox[2] + 20, bbox[3] + 20), (0, 225, 0), 2)
 
-    img = detector.findHands(img)
-    lmList, bbox = detector.findPosition(img, draw=False)
+        return self.lmList, bbox
 
-    if len(lmList) != 0:
-        x1, y1 = lmList[8][1:]
-        x2, y2 = lmList[12][1:]
+    def fingersUp(self):
+        fingers = []
+        # Thumb
+        if self.lmList[self.tipIds[0]][1] > self.lmList[self.tipIds[0] - 1][1]:
+            fingers.append(1)
+        else:
+            fingers.append(0)
 
-        fingers = detector.fingersUp()
-
-        if fingers[1] and fingers[2]:
-            xp, yp = 0, 0
-            if y1 < 125:
-                if 250 < x1 < 450:
-                    header = overLayList[0]
-                    drawColor = (225, 0, 225)
-                elif 550 < x1 < 750:
-                    header = overLayList[1]
-                    drawColor = (225, 0, 0)
-                elif 800 < x1 < 950:
-                    header = overLayList[2]
-                    drawColor = (0, 225, 0)
-                elif 1050 < x1 < 1200:
-                    header = overLayList[3]
-                    drawColor = (0, 0, 0)
-            cv2.rectangle(img, (x1, y1 - 25), (x2, y2 + 25), drawColor, cv2.FILLED)
-
-        if fingers[1] and fingers[2] == False:
-            cv2.circle(img, (x1, y1), 15, drawColor, cv2.FILLED)
-            if xp == 0 and yp == 0:
-                xp, yp = x1, y1
-
-            if drawColor == (0, 0, 0):
-                cv2.line(img, (xp, yp), (x1, y1), drawColor, eraserThickness)
-                cv2.line(imgCanvas, (xp, yp), (x1, y1), drawColor, eraserThickness)
+        # 4 fingers
+        for id in range(1, 5):
+            if self.lmList[self.tipIds[id]][2] < self.lmList[self.tipIds[id] - 2][2]:
+                fingers.append(1)
             else:
-                cv2.line(img, (xp, yp), (x1, y1), drawColor, brushThickness)
-                cv2.line(imgCanvas, (xp, yp), (x1, y1), drawColor, brushThickness)
+                fingers.append(0)
+        return fingers
 
-            xp, yp = x1, y1
+    def findDistance(self, p1, p2, img, draw=True):
+        x1, y1 = self.lmList[p1][1], self.lmList[p1][2]
+        x2, y2 = self.lmList[p2][1], self.lmList[p2][2]
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
 
-    imgGray = cv2.cvtColor(imgCanvas, cv2.COLOR_BGR2GRAY)
-    _, imgInv = cv2.threshold(imgGray, 50, 225, cv2.THRESH_BINARY_INV)
-    imgInv = cv2.cvtColor(imgInv, cv2.COLOR_GRAY2BGR)
-    img = cv2.bitwise_and(img, imgInv)
-    img = cv2.bitwise_or(img, imgCanvas)
+        if draw:
+            cv2.circle(img, (x1, y1), 15, (225, 0, 225), cv2.FILLED)
+            cv2.circle(img, (x2, y2), 15, (225, 0, 225), cv2.FILLED)
+            cv2.line(img, (x1, y1), (x2, y2), (225, 0, 225), 3)
+            cv2.circle(img, (cx, cy), 15, (225, 0, 225), cv2.FILLED)
 
-    img[0:125, 0:1280] = header
-    img = cv2.addWeighted(img, (1), imgCanvas, 0.5, 0)
-    cv2.imshow("image", img)
-    cv2.waitKey(1)
+        length = math.hypot(x2 - x1, y2 - y1)
+        return length, img, [x1, y1, x2, y2, cx, cy]
+
+def main():
+    pTime = 0
+    cTime = 0
+    cap = cv2.VideoCapture(0)
+    detector = handDetector()
+    while True:
+        success, img = cap.read()
+        img = detector.findHands(img)
+        lmList = detector.findPosition(img)
+        if len(lmList) != 0:
+            print(lmList[4])
+
+        cTime = time.time()
+        fps = 1 / (cTime - pTime)
+        pTime = cTime
+
+        cv2.putText(img, str(int(fps)), (10, 70), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 255), 3)
+
+        cv2.imshow("Image", img)
+        cv2.waitKey(1)
+
+if __name__ == "__main__":
+    main()
